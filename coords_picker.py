@@ -167,6 +167,21 @@ HTML = """<!DOCTYPE html>
     }
     .calendar-btn:hover { filter: brightness(1.05); }
     ul.guide { margin: 4px 0 0 18px; padding: 0; color: var(--fg); line-height: 1.5; }
+    .note-box {
+      width: 100%;
+      min-height: 120px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--fg);
+      font-size: 14px;
+      line-height: 1.5;
+      resize: vertical;
+    }
+    [data-theme="dark"] .note-box {
+      background: rgba(0,0,0,0.2);
+    }
     #starCanvas {
       position: fixed;
       inset: 0;
@@ -260,6 +275,10 @@ HTML = """<!DOCTYPE html>
         <div id="fav-list" class="fav-list"></div>
       </div>
       <div class="row" style="display:block;">
+        <div><strong>メモ (ローカル保存):</strong></div>
+        <textarea id="user-note" class="note-box" placeholder="観測予定やチェック事項など自由に書けます。ブラウザのローカルストレージに保存されます。"></textarea>
+      </div>
+      <div class="row" style="display:block;">
         <div><strong>使い方:</strong></div>
         <ul class="guide">
           <li>地図をクリック → 座標と地名を取得し、各サイトボタンが有効になります。</li>
@@ -294,6 +313,7 @@ HTML = """<!DOCTYPE html>
     const favListEl = document.getElementById("fav-list");
     const themeToggleBtn = document.getElementById("theme-toggle");
     const locateBtn = document.getElementById("locate-btn");
+    const userNote = document.getElementById("user-note");
     const siteButtons = document.getElementById("site-buttons");
     const inputCoordsEl = document.getElementById("input-coords");
     const jumpBtn = document.getElementById("jump-btn");
@@ -322,6 +342,7 @@ HTML = """<!DOCTYPE html>
     const LPM_STATE = "eyJiYXNlbWFwIjoiTGF5ZXJCaW5nUm9hZCIsIm92ZXJsYXkiOiJ2aWlyc18yMDI0Iiwib3ZlcmxheWNvbG9yIjpmYWxzZSwib3ZlcmxheW9wYWNpdHkiOiI2MCIsImZlYXR1cmVzb3BhY2l0eSI6Ijg1In0=";
     const FAV_KEY = "scw_picker_favorites_v1";
     const SITE_ORDER_KEY = "scw_picker_site_order_v1";
+    const NOTE_KEY = "scw_picker_note_v1";
     const MAX_FAVS = 30;
     const THEME_KEY = "scw_picker_theme";
     const WINDY_EMBED_BASE = "https://embed.windy.com/embed2.html";
@@ -840,6 +861,26 @@ HTML = """<!DOCTYPE html>
 
     setupSiteDrag();
     renderFavorites();
+    // メモの保存/復元
+    if (userNote) {
+      try {
+        const savedNote = localStorage.getItem(NOTE_KEY);
+        if (savedNote !== null) {
+          userNote.value = savedNote;
+        }
+      } catch {}
+      let noteTimer = null;
+      const saveNote = () => {
+        try {
+          localStorage.setItem(NOTE_KEY, userNote.value);
+        } catch {}
+      };
+      userNote.addEventListener("input", () => {
+        if (noteTimer) clearTimeout(noteTimer);
+        noteTimer = setTimeout(saveNote, 400);
+      });
+      userNote.addEventListener("change", saveNote);
+    }
 
     const LOCATE_LABEL = "現在地を取得（GPS）";
     function requestCurrentLocation() {
