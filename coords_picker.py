@@ -295,7 +295,6 @@ HTML = """<!DOCTYPE html>
     const themeToggleBtn = document.getElementById("theme-toggle");
     const locateBtn = document.getElementById("locate-btn");
     const siteButtons = document.getElementById("site-buttons");
-    const buttonsSection = siteButtons;
     const inputCoordsEl = document.getElementById("input-coords");
     const jumpBtn = document.getElementById("jump-btn");
 
@@ -315,6 +314,7 @@ HTML = """<!DOCTYPE html>
     const DEFAULT_ELEMENT = "cp";
     const DEFAULT_ZL = "13";
     const WINDY_Z = 10;
+    const WINDY_JMA_Z = 8; // MSMはやや広域をデフォルト表示
     const WINDY_LAYER = "clouds";
     const WINDY_SLUG = "-%E9%9B%B2-clouds";
     const WINDY_TRAIL = "i:pressure,p:cities";
@@ -355,7 +355,7 @@ HTML = """<!DOCTYPE html>
       return `https://www.windy.com/ja/${WINDY_SLUG}?gfs,${WINDY_LAYER},${lat.toFixed(4)},${lng.toFixed(4)},${z},${WINDY_TRAIL}`;
     };
     const windyJmaUrl = (lat, lng) => {
-      const z = safeZoom();
+      const z = WINDY_JMA_Z;
       return `https://www.windy.com/ja/${WINDY_SLUG}?jmaMsm,${WINDY_LAYER},${lat.toFixed(4)},${lng.toFixed(4)},${z},${WINDY_TRAIL}&marker=true`;
     };
     const windyIconUrl = (lat, lng) => {
@@ -426,9 +426,6 @@ HTML = """<!DOCTYPE html>
       }
       updateLinks(lat, lng);
       renderFavorites();
-      if (opts.scroll && buttonsSection) {
-        buttonsSection.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
     }
 
     function updateLinks(lat, lng) {
