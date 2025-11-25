@@ -1,0 +1,949 @@
+"""
+Leaflet で座標を選び、各サイトを開くボタンを提供するツール。
+対象: SCW / ClearOutside / Windy（ECMWF・GFS・JMA MSM・ICON、4分割は別ウィンドウ）/ LightPollutionMap / Stellarium / meteoblue
+機能: 地名表示（Nominatim逆ジオ）、お気に入り登録・呼び出し（最大10件、localStorage保存）、ライト/ダーク切替、サイトボタン並び替え保存
+"""
+
+from pathlib import Path
+import webbrowser
+
+# HTMLは後続の文字列連結で構築
+HTML = """<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>座標ピッカー</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #1f2937;
+      --panel-bg: #f8fafc;
+      --accent: #2563eb;
+      --code-bg: #f1f5f9;
+      --border: #d1d5db;
+      --shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+      --radius: 14px;
+      --max-width: 1100px;
+    }
+    [data-theme="dark"] {
+      --bg: #020617;
+      --fg: #e5e7eb;
+      --panel-bg: rgba(10, 10, 10, 0.8);
+      --accent: #60a5fa;
+      --code-bg: #0f172a;
+      --border: #334155;
+      --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+      padding: env(safe-area-inset-top, 0px) 12px env(safe-area-inset-bottom, 0px);
+      display: flex;
+      justify-content: center;
+    }
+    .page {
+      width: min(var(--max-width), 100%);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+    .panel {
+      padding: 12px 14px;
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(4px);
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(18px, 6vw, 24px);
+      letter-spacing: 0.01em;
+    }
+    #map {
+      width: 100%;
+      height: clamp(340px, 60vh, 620px);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+    }
+    .row {
+      margin-bottom: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .row.stack { flex-direction: column; align-items: stretch; }
+    .row:last-child { margin-bottom: 0; }
+    code { background: var(--code-bg); padding: 2px 6px; border-radius: 6px; }
+    button {
+      padding: 10px 14px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 15px;
+      min-height: 44px;
+      transition: transform 0.05s ease, box-shadow 0.2s ease;
+      touch-action: manipulation;
+    }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .secondary {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    input[type="text"] {
+      padding: 10px 12px;
+      width: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      min-height: 44px;
+      font-size: 15px;
+    }
+    label.inline { display: flex; gap: 10px; align-items: center; width: 100%; }
+    .site-buttons {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px;
+      width: 100%;
+    }
+    .btn-drag.dragging { opacity: 0.6; border: 1px dashed var(--border); }
+    .fav-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .fav-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+      width: 100%;
+    }
+    .fav-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 8px;
+      background: var(--bg);
+      min-height: 44px;
+    }
+    .fav-item.dragging { opacity: 0.6; border-style: dashed; }
+    .fav-name { font-size: 0.95em; }
+    .fav-del { padding: 6px 8px; font-size: 0.85em; background: #ef4444; border: none; color: #fff; border-radius: 8px; }
+    .calendar-btn {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff;
+      border: 1px solid #1d4ed8;
+      padding: 10px 12px;
+      border-radius: 12px;
+      text-decoration: none;
+      display: inline-block;
+      min-height: 44px;
+      font-weight: 700;
+      text-align: center;
+      width: 100%;
+    }
+    .calendar-btn:hover { filter: brightness(1.05); }
+    ul.guide { margin: 4px 0 0 18px; padding: 0; color: var(--fg); line-height: 1.5; }
+    #starCanvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+      pointer-events: none;
+      display: block;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    [data-theme="dark"] #starCanvas { opacity: 1; }
+    .badge {
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      font-size: 13px;
+      color: var(--fg);
+    }
+    .subtext { font-size: 13px; opacity: 0.8; }
+    @media (max-width: 640px) {
+      body { padding: env(safe-area-inset-top, 0px) 8px env(safe-area-inset-bottom, 0px); }
+      .panel { padding: 12px; }
+      .row { flex-direction: column; align-items: stretch; margin-bottom: 12px; }
+      .row.inline { flex-direction: row; }
+      button, .secondary, .calendar-btn { width: 100%; text-align: center; }
+      .fav-tools > * { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="starCanvas"></canvas>
+  <div class="page">
+    <div class="panel" style="padding-bottom:10px;">
+      <div class="row" style="margin-bottom:0;">
+        <h1>座標ピッカー</h1>
+        <span class="badge">タップ＆ドラッグ対応</span>
+      </div>
+      <div class="row subtext" style="margin-bottom:0;">地図をタップして座標を取得し、各サイトをワンタップで開けます。</div>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="panel">
+      <div class="row">
+        <span>地図をクリックすると各サイトを開くボタンが有効になります。</span>
+        <button id="theme-toggle" class="secondary" type="button">ダークモードにする</button>
+      </div>
+      <div class="row">
+        <button id="locate-btn" type="button">現在地を取得（GPS）</button>
+      </div>
+      <div class="row stack">
+        <label class="inline">
+          <span>座標</span>
+          <input id="input-coords" type="text" placeholder="38.13665621942762, 140.44956778749423" />
+        </label>
+        <button id="jump-btn" class="secondary" type="button">この座標へ移動</button>
+      </div>
+      <div class="row">選択座標: <code id="coords">未選択</code></div>
+      <div class="row">地名: <code id="placename">未取得</code></div>
+      <div class="row" style="width:100%; display:block;">
+        <div class="site-buttons" id="site-buttons">
+          <button id="open-scw" class="btn-drag" disabled>SCW</button>
+          <button id="open-co" class="btn-drag" disabled>ClearOutside</button>
+          <button id="open-windy" class="btn-drag" disabled>Windy(ECMWF)</button>
+          <button id="open-stella" class="btn-drag" disabled>Stellarium</button>
+          <button id="open-windy-gfs" class="btn-drag" disabled>Windy(GFS)</button>
+          <button id="open-windy-jma" class="btn-drag" disabled>Windy(JMA MSM)</button>
+          <button id="open-windy-icon" class="btn-drag" disabled>Windy(ICON)</button>
+          <button id="open-lpm" class="btn-drag" disabled>LightPollutionMap</button>
+          <button id="open-ventusky" class="btn-drag" disabled>Ventusky</button>
+          <button id="open-meteoblue" class="btn-drag" disabled>meteoblue</button>
+          <button id="open-windy-quad" class="btn-drag" disabled>Windy 3分割</button>
+        </div>
+      </div>
+      <div class="row stack">
+        <input id="fav-name" type="text" placeholder="お気に入り名（空なら地名か座標）" />
+        <button id="fav-save" disabled>お気に入りに追加 (最大30件)</button>
+      </div>
+      <div class="row fav-tools">
+        <button id="fav-export" class="secondary" type="button">お気に入りを書き出す</button>
+        <label class="secondary" style="padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); cursor: pointer; min-height:44px; display:flex; align-items:center; justify-content:center;">
+          お気に入りを読み込む
+          <input id="fav-import" type="file" accept="application/json" style="display:none;">
+        </label>
+        <span class="hint subtext">JSON形式でエクスポート/インポートできます</span>
+      </div>
+      <div class="row" style="display:block;">
+        <div><strong>お気に入り一覧 (最大30件):</strong></div>
+        <div id="fav-list" class="fav-list"></div>
+      </div>
+      <div class="row" style="display:block;">
+        <div><strong>使い方:</strong></div>
+        <ul class="guide">
+          <li>地図をクリック → 座標と地名を取得し、各サイトボタンが有効になります。</li>
+          <li>Windy 3分割ボタンは別ウィンドウでECMWF/GFS/ICONとSCW枠を表示します（JMA MSMは公式非対応のため除外・ポップアップ許可が必要な場合あり）。</li>
+          <li>お気に入りは最大10件。名称未入力なら地名→座標の順で自動設定。削除は各行の削除ボタン。</li>
+          <li>ライト/ダーク切替はブラウザに保存され、再訪時に復元されます。</li>
+          <li>サイトボタンはドラッグで並び替えでき、順序は保存されます。</li>
+          <li>Windy埋め込みはJMA MSMの分割表示が公式非対応のため、分割表示から除外しています。</li>
+        </ul>
+      </div>
+      <div class="row">
+        <a href="https://ss1.xrea.com/tegaugi.s323.xrea.com/astro_calendar/" target="_blank" rel="noopener" class="calendar-btn">天文カレンダーを開く</a>
+      </div>
+    </div>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    let map = null;
+    let marker = null;
+    let currentLatLng = null;
+    const coordsEl = document.getElementById("coords");
+    const placeEl = document.getElementById("placename");
+    const favNameEl = document.getElementById("fav-name");
+    const favSaveBtn = document.getElementById("fav-save");
+    const favExportBtn = document.getElementById("fav-export");
+    const favImportInput = document.getElementById("fav-import");
+    const favListEl = document.getElementById("fav-list");
+    const themeToggleBtn = document.getElementById("theme-toggle");
+    const locateBtn = document.getElementById("locate-btn");
+    const siteButtons = document.getElementById("site-buttons");
+    const buttonsSection = siteButtons;
+    const inputCoordsEl = document.getElementById("input-coords");
+    const jumpBtn = document.getElementById("jump-btn");
+
+    const openScwBtn = document.getElementById("open-scw");
+    const openCoBtn = document.getElementById("open-co");
+    const openWindyBtn = document.getElementById("open-windy");
+    const openStellaBtn = document.getElementById("open-stella");
+    const openWindyGfsBtn = document.getElementById("open-windy-gfs");
+    const openWindyJmaBtn = document.getElementById("open-windy-jma");
+    const openWindyIconBtn = document.getElementById("open-windy-icon");
+    const openLpmBtn = document.getElementById("open-lpm");
+    const openVentuskyBtn = document.getElementById("open-ventusky");
+    const openMeteoblueBtn = document.getElementById("open-meteoblue");
+    const openWindyQuadBtn = document.getElementById("open-windy-quad");
+
+    const DEFAULT_MODEL = "msm78";
+    const DEFAULT_ELEMENT = "cp";
+    const DEFAULT_ZL = "13";
+    const WINDY_Z = 10;
+    const WINDY_LAYER = "clouds";
+    const WINDY_SLUG = "-%E9%9B%B2-clouds";
+    const WINDY_TRAIL = "i:pressure,p:cities";
+    const LPM_DEFAULT_ZOOM = 10;
+    const LPM_STATE = "eyJiYXNlbWFwIjoiTGF5ZXJCaW5nUm9hZCIsIm92ZXJsYXkiOiJ2aWlyc18yMDI0Iiwib3ZlcmxheWNvbG9yIjpmYWxzZSwib3ZlcmxheW9wYWNpdHkiOiI2MCIsImZlYXR1cmVzb3BhY2l0eSI6Ijg1In0=";
+    const FAV_KEY = "scw_picker_favorites_v1";
+    const SITE_ORDER_KEY = "scw_picker_site_order_v1";
+    const MAX_FAVS = 30;
+    const THEME_KEY = "scw_picker_theme";
+    const WINDY_EMBED_BASE = "https://embed.windy.com/embed2.html";
+    const VENTUSKY_Z = 6;
+    const VENTUSKY_LAYER = "clouds-total";
+
+    const siteButtonIds = [
+      "open-scw",
+      "open-co",
+      "open-windy",
+      "open-stella",
+      "open-windy-gfs",
+      "open-windy-jma",
+      "open-windy-icon",
+      "open-lpm",
+      "open-ventusky",
+      "open-meteoblue",
+      "open-windy-quad",
+    ];
+    let siteOrder = [...siteButtonIds];
+    let buttonDragSrcId = null;
+
+    const safeZoom = () => (map && typeof map.getZoom === "function" ? map.getZoom() : WINDY_Z);
+    const safeLpZoom = () => (map && typeof map.getZoom === "function" ? map.getZoom() : LPM_DEFAULT_ZOOM);
+    const windyUrl = (lat, lng) => {
+      const z = safeZoom();
+      return `https://www.windy.com/ja/${WINDY_SLUG}?${WINDY_LAYER},${lat.toFixed(4)},${lng.toFixed(4)},${z},${WINDY_TRAIL}`;
+    };
+    const windyGfsUrl = (lat, lng) => {
+      const z = safeZoom();
+      return `https://www.windy.com/ja/${WINDY_SLUG}?gfs,${WINDY_LAYER},${lat.toFixed(4)},${lng.toFixed(4)},${z},${WINDY_TRAIL}`;
+    };
+    const windyJmaUrl = (lat, lng) => {
+      const z = safeZoom();
+      return `https://www.windy.com/ja/${WINDY_SLUG}?jmaMsm,${WINDY_LAYER},${lat.toFixed(4)},${lng.toFixed(4)},${z},${WINDY_TRAIL}&marker=true`;
+    };
+    const windyIconUrl = (lat, lng) => {
+      const z = safeZoom();
+      return `https://www.windy.com/ja/${WINDY_SLUG}?icon,${WINDY_LAYER},${lat.toFixed(4)},${lng.toFixed(4)},${z},${WINDY_TRAIL}`;
+    };
+    const lpmUrl = (lat, lng) => {
+      const z = safeLpZoom();
+      return `https://www.lightpollutionmap.info/#zoom=${z.toFixed(2)}&lat=${lat.toFixed(4)}&lon=${lng.toFixed(4)}&state=${LPM_STATE}`;
+    };
+    const stellariumUrl = (lat, lng) =>
+      `https://stellarium-web.org/?lat=${lat.toFixed(4)}&lng=${lng.toFixed(4)}`;
+    const windyEmbedUrl = (lat, lng, product) => {
+      const latStr = lat.toFixed(3);
+      const lngStr = lng.toFixed(3);
+      return `${WINDY_EMBED_BASE}?lat=${latStr}&lon=${lngStr}&detailLat=${latStr}&detailLon=${lngStr}&zoom=${WINDY_Z}&level=surface&overlay=clouds&product=${product}&model=${product}&menu=&message=true&marker=true&type=map&location=coordinates&m=********`;
+    };
+
+    const meteoblueUrl = (lat, lng) => {
+      const fmt = (v, pos, neg) => `${Math.abs(v).toFixed(3)}${v >= 0 ? pos : neg}`;
+      return `https://www.meteoblue.com/en/weather/week/${fmt(lat, "N", "S")}${fmt(lng, "E", "W")}`;
+    };
+    const ventuskyUrl = (lat, lng) =>
+      `https://www.ventusky.com/?p=${lat.toFixed(2)};${lng.toFixed(2)};${VENTUSKY_Z}&l=${VENTUSKY_LAYER}`;
+
+    async function updatePlacename(lat, lng) {
+      placeEl.textContent = "取得中...";
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=ja`,
+          { headers: { "User-Agent": "scw-picker/1.0" } }
+        );
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data = await res.json();
+        placeEl.textContent = data.display_name || "名前を取得できませんでした";
+      } catch (err) {
+        placeEl.textContent = "名前を取得できませんでした";
+        console.error(err);
+      }
+    }
+
+    function enableButtons() {
+      openScwBtn.disabled = false;
+      openCoBtn.disabled = false;
+      openWindyBtn.disabled = false;
+      openWindyQuadBtn.disabled = false;
+      openWindyGfsBtn.disabled = false;
+      openWindyJmaBtn.disabled = false;
+      openWindyIconBtn.disabled = false;
+      openLpmBtn.disabled = false;
+      openStellaBtn.disabled = false;
+      openVentuskyBtn.disabled = false;
+      openMeteoblueBtn.disabled = false;
+      favSaveBtn.disabled = false;
+    }
+
+    function setLocation(lat, lng, opts = { pan: true, scroll: true, zoom: null }) {
+      if (!map) return;
+      currentLatLng = { lat, lng };
+      if (!marker) {
+        marker = L.marker([lat, lng]).addTo(map);
+      } else {
+        marker.setLatLng([lat, lng]);
+      }
+      if (opts.pan) {
+        const targetZoom = opts.zoom != null ? opts.zoom : map.getZoom();
+        map.setView([lat, lng], targetZoom);
+      }
+      updateLinks(lat, lng);
+      renderFavorites();
+      if (opts.scroll && buttonsSection) {
+        buttonsSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+
+    function updateLinks(lat, lng) {
+      const params = new URLSearchParams({
+        lat: lat.toFixed(6),
+        lng: lng.toFixed(6),
+        model: DEFAULT_MODEL,
+        element: DEFAULT_ELEMENT,
+        zl: DEFAULT_ZL,
+      });
+      const scwUrl = `https://supercweather.com/?${params.toString()}`;
+      const coUrl = `https://clearoutside.com/forecast/${lat.toFixed(4)}/${lng.toFixed(4)}`;
+      const wUrl = windyEmbedUrl(lat, lng, "ecmwf");
+      const wGfsUrl = windyEmbedUrl(lat, lng, "gfs");
+      const wJmaUrl = windyJmaUrl(lat, lng);
+      const wIconUrl = windyEmbedUrl(lat, lng, "icon");
+      const lpUrl = lpmUrl(lat, lng);
+      const stUrl = stellariumUrl(lat, lng);
+      const mbUrl = meteoblueUrl(lat, lng);
+      const vsUrl = ventuskyUrl(lat, lng);
+
+      coordsEl.textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      updatePlacename(lat, lng);
+      enableButtons();
+
+      openScwBtn.onclick = () => window.open(scwUrl, "_blank");
+      openCoBtn.onclick = () => window.open(coUrl, "_blank");
+      openWindyBtn.onclick = () => window.open(wUrl, "_blank");
+      openWindyGfsBtn.onclick = () => window.open(wGfsUrl, "_blank");
+      openWindyJmaBtn.onclick = () => window.open(wJmaUrl, "_blank");
+      openWindyIconBtn.onclick = () => window.open(wIconUrl, "_blank");
+      openLpmBtn.onclick = () => window.open(lpUrl, "_blank");
+      openStellaBtn.onclick = () => window.open(stUrl, "_blank");
+      openMeteoblueBtn.onclick = () => window.open(mbUrl, "_blank");
+      openVentuskyBtn.onclick = () => window.open(vsUrl, "_blank");
+      openWindyQuadBtn.onclick = () => openWindyQuadWindow(lat, lng);
+    }
+
+    function loadFavorites() {
+      try {
+        const data = localStorage.getItem(FAV_KEY);
+        if (!data) return [];
+        return JSON.parse(data);
+      } catch {
+        return [];
+      }
+    }
+
+    function saveFavorites(list) {
+      localStorage.setItem(FAV_KEY, JSON.stringify(list));
+    }
+
+    function loadSiteOrder() {
+      try {
+        const data = localStorage.getItem(SITE_ORDER_KEY);
+        if (!data) return [...siteButtonIds];
+        const parsed = JSON.parse(data);
+        if (!Array.isArray(parsed)) return [...siteButtonIds];
+        const filtered = parsed.filter((id) => siteButtonIds.includes(id));
+        const missing = siteButtonIds.filter((id) => !filtered.includes(id));
+        return [...filtered, ...missing];
+      } catch {
+        return [...siteButtonIds];
+      }
+    }
+
+    function saveSiteOrder(order) {
+      localStorage.setItem(SITE_ORDER_KEY, JSON.stringify(order));
+    }
+
+    function applySiteOrder(order) {
+      order.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (btn) siteButtons.appendChild(btn);
+      });
+      siteOrder = order;
+    }
+
+    function setupSiteDrag() {
+      siteOrder = loadSiteOrder();
+      applySiteOrder(siteOrder);
+      siteButtonIds.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        btn.draggable = true;
+        btn.dataset.id = id;
+        btn.addEventListener("dragstart", (e) => {
+          buttonDragSrcId = id;
+          btn.classList.add("dragging");
+          e.dataTransfer.effectAllowed = "move";
+        });
+        btn.addEventListener("dragend", () => {
+          btn.classList.remove("dragging");
+          buttonDragSrcId = null;
+        });
+        btn.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        });
+        btn.addEventListener("drop", (e) => {
+          e.preventDefault();
+          const targetId = id;
+          if (!buttonDragSrcId || buttonDragSrcId === targetId) return;
+          const current = [...siteOrder];
+          const from = current.indexOf(buttonDragSrcId);
+          const to = current.indexOf(targetId);
+          if (from === -1 || to === -1) return;
+          const [item] = current.splice(from, 1);
+          current.splice(to, 0, item);
+          saveSiteOrder(current);
+          applySiteOrder(current);
+        });
+      });
+    }
+
+    let dragSrcIndex = null;
+
+    function renderFavorites() {
+      const favs = loadFavorites();
+      favListEl.innerHTML = "";
+      if (favs.length === 0) {
+        favListEl.textContent = "なし";
+      } else {
+        favs.forEach((fav, idx) => {
+          const wrap = document.createElement("div");
+          wrap.className = "fav-item";
+          wrap.draggable = true;
+          wrap.dataset.index = idx;
+          const btn = document.createElement("button");
+          btn.textContent = fav.name;
+          btn.onclick = () => {
+            const { lat, lng } = fav;
+            map.setView([lat, lng], map.getZoom());
+            if (!marker) {
+              marker = L.marker([lat, lng]).addTo(map);
+            } else {
+              marker.setLatLng([lat, lng]);
+            }
+            currentLatLng = { lat, lng };
+            updateLinks(lat, lng);
+            renderFavorites();
+          };
+          const del = document.createElement("button");
+          del.textContent = "削除";
+          del.className = "fav-del";
+          del.onclick = () => {
+            const next = loadFavorites().filter((_, i) => i !== idx);
+            saveFavorites(next);
+            renderFavorites();
+          };
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "fav-name";
+          nameSpan.textContent = `(${fav.lat.toFixed(4)}, ${fav.lng.toFixed(4)})`;
+          wrap.appendChild(btn);
+          wrap.appendChild(nameSpan);
+          wrap.appendChild(del);
+
+          wrap.addEventListener("dragstart", (e) => {
+            dragSrcIndex = idx;
+            wrap.classList.add("dragging");
+            e.dataTransfer.effectAllowed = "move";
+          });
+          wrap.addEventListener("dragend", () => {
+            wrap.classList.remove("dragging");
+            dragSrcIndex = null;
+          });
+          wrap.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+          });
+          wrap.addEventListener("drop", (e) => {
+            e.preventDefault();
+            const from = dragSrcIndex;
+            const to = idx;
+            if (from === null || from === to) return;
+            const current = loadFavorites();
+            if (from < 0 || from >= current.length || to < 0 || to >= current.length) return;
+            const [item] = current.splice(from, 1);
+            current.splice(to, 0, item);
+            saveFavorites(current);
+            renderFavorites();
+          });
+
+          favListEl.appendChild(wrap);
+        });
+      }
+      favSaveBtn.disabled = favs.length >= MAX_FAVS || !currentLatLng;
+      favSaveBtn.textContent = favs.length >= MAX_FAVS ? "お気に入り上限(30件)" : "お気に入りに追加 (最大30件)";
+    }
+
+    function addFavorite() {
+      if (!currentLatLng) return;
+      const favs = loadFavorites();
+      if (favs.length >= MAX_FAVS) {
+        alert(`お気に入りは最大 ${MAX_FAVS} 件までです。`);
+        renderFavorites();
+        return;
+      }
+      const name =
+        favNameEl.value.trim() ||
+        placeEl.textContent.trim() ||
+        `${currentLatLng.lat.toFixed(4)}, ${currentLatLng.lng.toFixed(4)}`;
+      favs.push({ name, lat: currentLatLng.lat, lng: currentLatLng.lng });
+      saveFavorites(favs);
+      renderFavorites();
+      favNameEl.value = "";
+    }
+
+    favSaveBtn.onclick = addFavorite;
+
+    function exportFavorites() {
+      const data = JSON.stringify(loadFavorites(), null, 2);
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "favorites.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function importFavoritesFromFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(reader.result);
+          if (!Array.isArray(parsed)) throw new Error("not array");
+          const cleaned = parsed
+            .map((f) => {
+              const latNum = Number(f.lat);
+              const lngNum = Number(f.lng);
+              const fallbackName =
+                Number.isFinite(latNum) && Number.isFinite(lngNum)
+                  ? `${latNum.toFixed(4)}, ${lngNum.toFixed(4)}`
+                  : "";
+              return {
+                name: typeof f.name === "string" && f.name ? f.name : fallbackName,
+                lat: latNum,
+                lng: lngNum,
+              };
+            })
+            .filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lng));
+          if (cleaned.length === 0) throw new Error("empty");
+          saveFavorites(cleaned.slice(0, MAX_FAVS));
+          renderFavorites();
+          alert("お気に入りをインポートしました。");
+        } catch (e) {
+          alert("インポートに失敗しました。JSON形式と緯度経度を確認してください。");
+        }
+      };
+      reader.readAsText(file, "utf-8");
+    }
+
+    if (favExportBtn) favExportBtn.onclick = exportFavorites;
+    if (favImportInput) {
+      favImportInput.addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) {
+          importFavoritesFromFile(file);
+          favImportInput.value = "";
+        }
+      });
+    }
+
+    function jumpToInput() {
+      const raw = ((inputCoordsEl && inputCoordsEl.value) || "").trim();
+      const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length < 2) {
+        alert("緯度,経度をカンマ区切りで入力してください（例: 38.2160334, 140.3418724）。");
+        return;
+      }
+      const latNum = parseFloat(parts[0]);
+      const lngNum = parseFloat(parts[1]);
+      if (Number.isNaN(latNum) || Number.isNaN(lngNum)) {
+        alert("緯度,経度を数値で入力してください（例: 38.2160334, 140.3418724）。");
+        return;
+      }
+      setLocation(latNum, lngNum, { pan: true, scroll: true, zoom: 13 });
+    }
+
+    if (jumpBtn) jumpBtn.onclick = jumpToInput;
+    if (inputCoordsEl) {
+      inputCoordsEl.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") jumpToInput();
+      });
+    }
+
+    function ensureMapSize() {
+      const mapEl = document.getElementById("map");
+      if (mapEl && !mapEl.style.minHeight) {
+        mapEl.style.minHeight = "320px";
+      }
+    }
+
+    function initMap() {
+      ensureMapSize();
+      try {
+        map = L.map("map").setView([35.681236, 139.767125], 10);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 18,
+          attribution: "© OpenStreetMap contributors",
+        }).addTo(map);
+        map.on("click", (e) => {
+          const { lat, lng } = e.latlng;
+          setLocation(lat, lng, { pan: false, scroll: true });
+        });
+      } catch (err) {
+        console.error("Map init failed", err);
+        if (coordsEl) coordsEl.textContent = "地図の初期化に失敗しました。リロードしてください。";
+      }
+    }
+
+    // 初期化
+    initMap();
+
+    function openWindyQuadWindow(lat, lng) {
+      const models = [
+        { label: "ECMWF", product: "ecmwf" },
+        { label: "GFS", product: "gfs" },
+        { label: "ICON", product: "icon" },
+        { label: "SCW ※Windy埋め込みはJMA MSMの分割表示が公式非対応のため、分割表示から除外しています。", product: "scw" },
+      ];
+      const doc = `
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Windy 3分割</title>
+  <style>
+    body { margin:0; background:#0f172a; color:#e5e7eb; font-family:system-ui,-apple-system,sans-serif; }
+    .grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); grid-auto-rows:50vh; gap:6px; padding:6px; box-sizing:border-box; height:100vh; }
+    .grid.maximized { grid-template-columns:1fr; grid-auto-rows:1fr; }
+    .card { border:1px solid #334155; border-radius:6px; overflow:hidden; display:flex; flex-direction:column; }
+    .card header { padding:6px 10px; background:#111827; border-bottom:1px solid #334155; font-weight:600; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .actions { display:flex; gap:6px; }
+    .actions button { background:#2563eb; color:#fff; border:0; border-radius:4px; padding:4px 8px; cursor:pointer; }
+    .url { font-size:12px; color:#cbd5e1; padding:4px 10px; background:#0b1220; border-bottom:1px solid #1f2937; word-break: break-all; }
+    iframe { flex:1; border:0; width:100%; height:100%; }
+  </style>
+</head>
+<body>
+  <div class="grid" id="grid">
+    ${models
+      .map(
+        (m, i) => {
+          let body = "";
+          if (m.product === "scw") {
+            const scwUrl = `https://supercweather.com/?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}&model=msm78&element=cp&zl=13`;
+            body = `<iframe src="${scwUrl}" loading="lazy"></iframe>`;
+          } else {
+            const url = windyEmbedUrl(lat, lng, m.product);
+            body = `<iframe src="${url}" loading="lazy"></iframe>`;
+          }
+          return `
+      <div class="card" data-idx="${i}">
+        <header>
+          <span>${m.label}</span>
+          <div class="actions">
+            <button onclick="maximize(${i})">最大化</button>
+            <button onclick="restore()">元に戻す</button>
+          </div>
+        </header>
+        ${body}
+      </div>`;
+        }
+      )
+      .join("")}
+  </div>
+  <script>
+    const grid = document.getElementById("grid");
+    const cards = Array.from(grid.querySelectorAll(".card"));
+    function maximize(idx) {
+      cards.forEach((c, i) => { c.style.display = i === idx ? "flex" : "none"; });
+      grid.classList.add("maximized");
+    }
+    function restore() {
+      cards.forEach((c) => (c.style.display = "flex"));
+      grid.classList.remove("maximized");
+    }
+  <\\/script>
+</body>
+</html>`;
+      const w = window.open("", "_blank");
+      if (!w) {
+        alert("ポップアップがブロックされました。許可してください。");
+        return;
+      }
+      w.document.write(doc);
+      w.document.close();
+    }
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      localStorage.setItem(THEME_KEY, theme);
+      themeToggleBtn.textContent = theme === "dark" ? "ライトモードにする" : "ダークモードにする";
+    }
+    (function initTheme() {
+      const saved = localStorage.getItem(THEME_KEY);
+      if (saved === "dark" || saved === "light") {
+        applyTheme(saved);
+      } else {
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        applyTheme(prefersDark ? "dark" : "light");
+      }
+    })();
+    themeToggleBtn.onclick = () => {
+      const current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+      applyTheme(current === "dark" ? "light" : "dark");
+    };
+
+    setupSiteDrag();
+    renderFavorites();
+
+    const LOCATE_LABEL = "現在地を取得（GPS）";
+    function requestCurrentLocation() {
+      if (!navigator.geolocation) {
+        alert("このブラウザでは現在地取得に対応していません。");
+        return;
+      }
+      locateBtn.disabled = true;
+      locateBtn.textContent = "取得中...";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          locateBtn.disabled = false;
+          locateBtn.textContent = LOCATE_LABEL;
+          const { latitude, longitude } = pos.coords;
+          setLocation(latitude, longitude, { pan: true, scroll: true, zoom: 13 });
+        },
+        (err) => {
+          locateBtn.disabled = false;
+          locateBtn.textContent = LOCATE_LABEL;
+          alert(`現在地を取得できませんでした: ${err.message}`);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+      );
+    }
+    if (locateBtn) locateBtn.onclick = requestCurrentLocation;
+
+    const starCanvas = document.getElementById("starCanvas");
+    const ctx = starCanvas.getContext("2d");
+    let stars = [];
+
+    function resizeStars() {
+      starCanvas.width = window.innerWidth;
+      starCanvas.height = window.innerHeight;
+    }
+
+    function initStars() {
+      const count = 320;
+      stars = Array.from({ length: count }, () => ({
+        x: Math.random() * starCanvas.width,
+        y: Math.random() * starCanvas.height,
+        size: Math.random() * 1.5 + 0.5,
+        speedX: -(Math.random() * 0.2 + 0.05),
+        color: pickStarColor(),
+      }));
+    }
+
+    function pickStarColor() {
+      const r = Math.random() * 100;
+      if (r < 0.1) return "rgba(255,0,0,0.85)";
+      if (r < 1.1) return "rgba(255,165,0,0.85)";
+      if (r < 2.1) return "rgba(255,255,0,0.85)";
+      const palette = [
+        "rgba(255,255,255,0.9)",
+        "rgba(220,220,220,0.8)",
+        "rgba(170,190,255,0.85)",
+      ];
+      return palette[Math.floor(Math.random() * palette.length)];
+    }
+
+    function drawStars() {
+      const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+      if (!isDark) {
+        ctx.clearRect(0, 0, starCanvas.width, starCanvas.height);
+        requestAnimationFrame(drawStars);
+        return;
+      }
+      ctx.clearRect(0, 0, starCanvas.width, starCanvas.height);
+      stars.forEach((s) => {
+        s.x += s.speedX;
+        if (s.x < -5) s.x = starCanvas.width + 5;
+        const x = s.x;
+        const y = s.y;
+        ctx.fillStyle = s.color || "rgba(255,255,255,0.85)";
+        ctx.beginPath();
+        ctx.arc(x, y, s.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      requestAnimationFrame(drawStars);
+    }
+
+    window.addEventListener("resize", () => {
+      resizeStars();
+      initStars();
+    });
+    resizeStars();
+    initStars();
+    requestAnimationFrame(drawStars);
+  </script>
+</body>
+</html>
+"""
+
+
+def main():
+  # 絶対パスで保存しつつブラウザを開く（Streamlitなど相対パス不可対策）
+  html_path = Path(__file__).resolve().with_suffix(".html")
+  html_path.write_text(HTML, encoding="utf-8")
+  webbrowser.open(html_path.as_uri())
+  print("ブラウザが開かない場合は次のファイルを直接開いてください:")
+  print(html_path)
+
+
+if __name__ == "__main__":
+  main()
