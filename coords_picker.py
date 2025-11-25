@@ -937,6 +937,19 @@ HTML = """<!DOCTYPE html>
 
 
 def main():
+  # Streamlit上で実行されている場合はそのまま埋め込んで返す
+  try:
+    import streamlit as st  # type: ignore
+    from streamlit import runtime  # type: ignore
+    if runtime.exists():
+      st.set_page_config(page_title="座標ピッカー", layout="wide")
+      # Streamlitのレイアウト内でフルUIを表示
+      st.components.v1.html(HTML, height=1200, scrolling=True)
+      return
+  except Exception:
+    # streamlit未導入・未実行なら通常のHTML生成を実施
+    pass
+
   # 絶対パスで保存しつつブラウザを開く（Streamlitなど相対パス不可対策）
   html_path = Path(__file__).resolve().with_suffix(".html")
   html_path.write_text(HTML, encoding="utf-8")
