@@ -22,7 +22,7 @@ HTML = """<!DOCTYPE html>
   />
   <style>
     :root {
-      --bg: #ffffff;
+      --bg: linear-gradient(180deg, #a7d8ff 0%, #eaf7ff 50%, #f8fbff 100%);
       --fg: #1f2937;
       --panel-bg: rgba(248, 250, 252, 0.1); /* 透過率90% */
       --accent: #2563eb;
@@ -194,6 +194,18 @@ HTML = """<!DOCTYPE html>
       transition: opacity 0.3s ease;
     }
     [data-theme="dark"] #starCanvas { opacity: 1; }
+    #cloudCanvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+      pointer-events: none;
+      display: block;
+      opacity: 1;
+      transition: opacity 0.3s ease;
+    }
+    [data-theme="dark"] #cloudCanvas { opacity: 0; }
     .badge {
       padding: 4px 10px;
       border-radius: 999px;
@@ -214,6 +226,7 @@ HTML = """<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <canvas id="cloudCanvas"></canvas>
   <canvas id="starCanvas"></canvas>
   <div class="page">
     <div class="panel" style="padding-bottom:10px;">
@@ -910,6 +923,9 @@ HTML = """<!DOCTYPE html>
     const starCanvas = document.getElementById("starCanvas");
     const ctx = starCanvas.getContext("2d");
     let stars = [];
+    const cloudCanvas = document.getElementById("cloudCanvas");
+    const cloudCtx = cloudCanvas.getContext("2d");
+    let clouds = [];
 
     function resizeStars() {
       starCanvas.width = window.innerWidth;
@@ -964,10 +980,99 @@ HTML = """<!DOCTYPE html>
     window.addEventListener("resize", () => {
       resizeStars();
       initStars();
+      resizeClouds();
+      initClouds();
     });
     resizeStars();
     initStars();
     requestAnimationFrame(drawStars);
+
+    function resizeClouds() {
+      cloudCanvas.width = window.innerWidth;
+      cloudCanvas.height = window.innerHeight;
+    }
+
+    function makeCloud() {
+      const baseY = Math.random() * cloudCanvas.height * 0.6;
+      const speed = 8 + Math.random() * 18;
+      const scale = 0.9 + Math.random() * 1.6;
+      const pointCount = 14 + Math.floor(Math.random() * 8); // 14-21点の輪郭
+      const baseR = (60 + Math.random() * 70) * scale;
+      const points = [];
+      let maxR = 0;
+      for (let i = 0; i < pointCount; i++) {
+        const angle = (Math.PI * 2 * i) / pointCount;
+        const radius = baseR * (0.7 + Math.random() * 0.6);
+        points.push({ angle, radius });
+        if (radius > maxR) maxR = radius;
+      }
+      return {
+        x: Math.random() * cloudCanvas.width,
+        y: baseY,
+        speed,
+        points,
+        maxR,
+        alpha: 0.35 + Math.random() * 0.2,
+      };
+    }
+
+    function initClouds() {
+      const count = 10;
+      clouds = Array.from({ length: count }, () => makeCloud());
+    }
+
+    function drawClouds() {
+      const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+      cloudCtx.clearRect(0, 0, cloudCanvas.width, cloudCanvas.height);
+      if (isDark) {
+        requestAnimationFrame(drawClouds);
+        return;
+      }
+      clouds.forEach((c) => {
+        c.x += c.speed * 0.02;
+        if (c.x - c.maxR > cloudCanvas.width) {
+          const reset = makeCloud();
+          c.x = -reset.maxR;
+          c.y = reset.y;
+          c.speed = reset.speed;
+          c.points = reset.points;
+          c.maxR = reset.maxR;
+          c.alpha = reset.alpha;
+        }
+        const pts = c.points.map((p) => ({
+          x: c.x + Math.cos(p.angle) * p.radius,
+          y: c.y + Math.sin(p.angle) * p.radius * 0.65, // 縦方向をやや潰して水平に
+        }));
+        if (pts.length < 3) return;
+        cloudCtx.save();
+        cloudCtx.globalAlpha = c.alpha;
+        cloudCtx.filter = "blur(0.4px)";
+        const grad = cloudCtx.createLinearGradient(0, c.y - c.maxR, 0, c.y + c.maxR);
+        grad.addColorStop(0, "rgba(255,255,255,0.95)");
+        grad.addColorStop(0.6, "rgba(255,255,255,0.88)");
+        grad.addColorStop(1, "rgba(255,255,255,0.7)");
+        cloudCtx.fillStyle = grad;
+        cloudCtx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const p1 = pts[i];
+          const p2 = pts[(i + 1) % pts.length];
+          const midX = (p1.x + p2.x) / 2;
+          const midY = (p1.y + p2.y) / 2;
+          if (i === 0) {
+            cloudCtx.moveTo(midX, midY);
+          }
+          cloudCtx.quadraticCurveTo(p1.x, p1.y, midX, midY);
+        }
+        cloudCtx.closePath();
+        cloudCtx.fill();
+        cloudCtx.restore();
+      });
+      requestAnimationFrame(drawClouds);
+    }
+
+    resizeClouds();
+    initClouds();
+    requestAnimationFrame(drawClouds);
   </script>
 </body>
 </html>
