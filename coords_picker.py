@@ -24,7 +24,7 @@ HTML = """<!DOCTYPE html>
     :root {
       --bg: #ffffff;
       --fg: #1f2937;
-      --panel-bg: #f8fafc;
+      --panel-bg: rgba(248, 250, 252, 0.1); /* 透過率90% */
       --accent: #2563eb;
       --code-bg: #f1f5f9;
       --border: #d1d5db;
@@ -35,7 +35,7 @@ HTML = """<!DOCTYPE html>
     [data-theme="dark"] {
       --bg: #020617;
       --fg: #e5e7eb;
-      --panel-bg: rgba(10, 10, 10, 0.8);
+      --panel-bg: rgba(10, 10, 10, 0.1); /* 透過率90% */
       --accent: #60a5fa;
       --code-bg: #0f172a;
       --border: #334155;
